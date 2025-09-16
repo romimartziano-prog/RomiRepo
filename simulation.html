@@ -1,0 +1,245 @@
+<!doctype html>
+<html lang="he" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>סימולציית קווי שדה חשמלי</title>
+<style>
+  :root{
+    --bg:#0d0f14; --panel:#151823; --ink:#e9ecf1; --muted:#9aa3b2;
+    --accent:#6ea8fe; --accent2:#ff6b6b; --grid:#242a39; --line:#2c3346;
+  }
+  html,body{height:100%;margin:0;background:var(--bg);color:var(--ink);font-family:Inter,system-ui,Segoe UI,Arial}
+  .wrap{height:100%;display:grid;grid-template-rows:auto 1fr}
+  .toolbar{display:flex;gap:.5rem;flex-wrap:wrap;align-items:center;background:var(--panel);padding:.6rem .8rem;border-bottom:1px solid var(--line)}
+  .btn{border:1px solid var(--line);background:#10131b;color:var(--ink);padding:.45rem .7rem;border-radius:.6rem;cursor:pointer}
+  .btn.active{outline:2px solid var(--accent)}
+  .btn.danger{outline:2px solid var(--accent2)}
+  .group{display:flex;gap:.4rem;align-items:center;background:#0f1320;border:1px solid var(--line);padding:.35rem .5rem;border-radius:.6rem}
+  .label{color:var(--muted);font-size:.92rem}
+  input[type=range]{accent-color:var(--accent)}
+  #stats{margin-inline-start:auto;color:var(--muted);font-size:.92rem}
+  #help{margin-inline-start:.5rem;color:var(--muted);font-size:.92rem}
+  canvas{display:block;width:100%;height:100%}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="toolbar">
+    <span class="label">מצב הוספה:</span>
+    <button class="btn" id="modePlus">+ מטען</button>
+    <button class="btn" id="modeMinus">− מטען</button>
+    <div class="group">
+      <span class="label">עוצמה</span>
+      <button class="btn" id="qDown">−</button>
+      <span id="qVal">1</span>
+      <button class="btn" id="qUp">+</button>
+    </div>
+    <div class="group">
+      <span class="label">קווי שדה</span>
+      <input type="range" id="seedCount" min="6" max="48" step="2" value="18">
+    </div>
+    <div class="group">
+      <span class="label">צעד</span>
+      <input type="range" id="step" min="0.8" max="4.0" step="0.1" value="2.0">
+    </div>
+    <button class="btn" id="erase">מחק</button>
+    <button class="btn danger" id="clear">ניקוי</button>
+    <span id="help">קליק בקנבס מוסיף מטען; גלילה = זום; גרירה עם Ctrl = הזזת מטען</span>
+    <span id="stats"></span>
+  </div>
+  <canvas id="cv"></canvas>
+</div>
+
+<script>
+(() => {
+  const TAU=Math.PI*2;
+  const cv=document.getElementById('cv');
+  const ctx=cv.getContext('2d',{alpha:false});
+  let dpr=1, zoom=1, charges=[];
+  let tool='+', qMag=1;
+  let nSeeds=18, stepLen=2.0;
+
+  const soft=6, seedR=12, stopNear=7, maxSteps=7000, fieldClip=1e4, minSpeed=1e-6;
+  const cell=1.5;
+  const visited=new Set();
+
+  const $ = sel => document.querySelector(sel);
+  const modePlus=$('#modePlus'), modeMinus=$('#modeMinus'), qVal=$('#qVal');
+  const seedCount=$('#seedCount'), stepRange=$('#step'), eraseBtn=$('#erase'), clearBtn=$('#clear');
+  const stats=$('#stats');
+
+  function resize(){
+    dpr=Math.max(1,window.devicePixelRatio||1);
+    cv.width=Math.floor(innerWidth*dpr);
+    const topH=document.querySelector('.toolbar').offsetHeight;
+    cv.height=Math.floor((innerHeight-topH)*dpr);
+    cv.style.width=innerWidth+'px';
+    cv.style.height=(innerHeight-topH)+'px';
+    ctx.setTransform(dpr*zoom,0,0,dpr*zoom,0,0);
+    draw();
+  }
+  window.addEventListener('resize',resize);
+
+  function setMode(m){
+    tool=m;
+    modePlus.classList.toggle('active',m==='+');
+    modeMinus.classList.toggle('active',m==='-');
+  }
+
+  function fieldAt(x,y){
+    let Ex=0,Ey=0;
+    for(const c of charges){
+      const dx=x-c.x, dy=y-c.y;
+      const r2=dx*dx+dy*dy+soft*soft;
+      const inv=1/Math.sqrt(r2), inv3=inv*inv*inv;
+      Ex+=c.q*dx*inv3;
+      Ey+=c.q*dy*inv3;
+    }
+    const m2=Ex*Ex+Ey*Ey;
+    if(m2>fieldClip*fieldClip){
+      const s=fieldClip/Math.sqrt(m2); Ex*=s; Ey*=s;
+    }
+    return [Ex,Ey];
+  }
+
+  function rk4(x,y,h,dir=+1){
+    const f=(xx,yy)=>{const v=fieldAt(xx,yy);const m=Math.hypot(v[0],v[1])||1e-9;return [dir*v[0]/m,dir*v[1]/m];};
+    const k1=f(x,y);
+    const k2=f(x+0.5*h*k1[0],y+0.5*h*k1[1]);
+    const k3=f(x+0.5*h*k2[0],y+0.5*h*k2[1]);
+    const k4=f(x+h*k3[0],y+h*k3[1]);
+    return [x+(h/6)*(k1[0]+2*k2[0]+2*k3[0]+k4[0]), y+(h/6)*(k1[1]+2*k2[1]+2*k3[1]+k4[1])];
+  }
+
+  function shouldStop(x,y){
+    if(x<-20||y<-20||x>cv.width/zoom+20||y>cv.height/zoom+20)return true;
+    for(const c of charges){if(Math.hypot(x-c.x,y-c.y)<stopNear)return true;}
+    const e=fieldAt(x,y); if(Math.hypot(e[0],e[1])<minSpeed)return true;
+    return false;
+  }
+
+  function drawLines(){
+    visited.clear();
+    ctx.lineWidth=1/zoom; ctx.globalAlpha=.95;
+
+    for(const c of charges){
+      ctx.strokeStyle=c.q>0?'#4aa4ff':'#ff6b6b'; // כחול לפלוס, אדום למינוס
+      for(let k=0;k<nSeeds;k++){
+        const a=(TAU*k)/nSeeds;
+        const sx=c.x+seedR*Math.cos(a), sy=c.y+seedR*Math.sin(a);
+        trace(sx,sy,+1); trace(sx,sy,-1);
+      }
+    }
+
+    for(const c of charges){
+      ctx.beginPath();
+      const r=7;
+      ctx.fillStyle=c.q>0?'#4aa4ff':'#ff6b6b';
+      ctx.strokeStyle='#0b0e16';
+      ctx.lineWidth=2/zoom;
+      ctx.arc(c.x,c.y,r,0,TAU);
+      ctx.fill(); ctx.stroke();
+      ctx.save();
+      ctx.fillStyle='#0b0e16';
+      ctx.font=(11/zoom)+'px system-ui';
+      ctx.textAlign='center'; ctx.textBaseline='middle';
+      ctx.fillText(c.q>0?'+':'−',c.x,c.y);
+      ctx.restore();
+    }
+
+    function trace(x,y,dir){
+      ctx.beginPath(); ctx.moveTo(x,y);
+      let px=x,py=y;
+      for(let i=0;i<maxSteps;i++){
+        const [nx,ny]=rk4(px,py,stepLen,dir);
+        const key=(Math.round(nx/cell)|0)+','+(Math.round(ny/cell)|0);
+        if(visited.has(key))break;
+        visited.add(key);
+        ctx.lineTo(nx,ny);
+        px=nx; py=ny;
+        if(shouldStop(px,py))break;
+      }
+      ctx.stroke();
+    }
+  }
+
+  function clearCanvas(){
+    ctx.fillStyle='#0d0f14';
+    ctx.fillRect(0,0,cv.width/zoom,cv.height/zoom);
+  }
+
+  function draw(){
+    clearCanvas(); drawLines();
+    stats.textContent=`מטענים: ${charges.length} · זרעים/מטען: ${nSeeds} · צעד: ${stepLen.toFixed(1)} · זום: ${zoom.toFixed(2)}`;
+  }
+
+  function addCharge(x,y,q){charges.push({x,y,q}); draw();}
+  function removeNearest(x,y){
+    if(!charges.length)return;
+    let bi=0,bd=Infinity;
+    for(let i=0;i<charges.length;i++){
+      const c=charges[i];const d=(c.x-x)*(c.x-x)+(c.y-y)*(c.y-y);
+      if(d<bd){bd=d;bi=i;}
+    }
+    charges.splice(bi,1); draw();
+  }
+
+  function getMouse(e){
+    const r=cv.getBoundingClientRect();
+    return {x:(e.clientX-r.left)*dpr/(dpr*zoom), y:(e.clientY-r.top)*dpr/(dpr*zoom)};
+  }
+
+  let dragging=null;
+  cv.addEventListener('pointerdown',e=>{
+    const m=getMouse(e);
+    if(e.ctrlKey){
+      let bi=-1,bd=12*12;
+      for(let i=0;i<charges.length;i++){
+        const c=charges[i];const d=(c.x-m.x)**2+(c.y-m.y)**2;
+        if(d<bd){bd=d;bi=i;}
+      }
+      if(bi>=0){dragging=bi;} return;
+    }
+    const q=(tool==='+')?Math.max(1,qMag):-Math.max(1,qMag);
+    addCharge(m.x,m.y,q);
+  });
+  cv.addEventListener('pointermove',e=>{
+    if(dragging!==null){const m=getMouse(e);charges[dragging].x=m.x;charges[dragging].y=m.y;draw();}
+  });
+  cv.addEventListener('pointerup',()=>{dragging=null;});
+  cv.addEventListener('pointercancel',()=>{dragging=null;});
+
+  cv.addEventListener('wheel',e=>{
+    e.preventDefault();
+    const scale=e.deltaY<0?1.1:1/1.1;
+    zoom=Math.max(0.6,Math.min(2.8,zoom*scale));
+    ctx.setTransform(dpr*zoom,0,0,dpr*zoom,0,0);
+    draw();
+  },{passive:false});
+
+  modePlus.onclick=()=>setMode('+');
+  modeMinus.onclick=()=>setMode('-');
+  setMode('+');
+
+  qVal.textContent=qMag;
+  $('#qUp').onclick=()=>{qMag=Math.min(5,qMag+1);qVal.textContent=qMag;};
+  $('#qDown').onclick=()=>{qMag=Math.max(1,qMag-1);qVal.textContent=qMag;};
+
+  seedCount.oninput=()=>{nSeeds=parseInt(seedCount.value,10);draw();};
+  stepRange.oninput=()=>{stepLen=parseFloat(stepRange.value);draw();};
+
+  eraseBtn.onclick=()=>{
+    const m=lastMouse||{x:cv.width/(2*zoom),y:cv.height/(2*zoom)};
+    removeNearest(m.x,m.y);
+  };
+  clearBtn.onclick=()=>{charges.length=0;draw();};
+
+  let lastMouse=null;
+  cv.addEventListener('mousemove',e=>{lastMouse=getMouse(e);});
+
+  resize(); draw();
+})();
+</script>
+</body>
+</html>
