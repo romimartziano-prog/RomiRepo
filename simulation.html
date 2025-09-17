@@ -6,20 +6,21 @@
 <title>סימולציית קווי שדה חשמלי</title>
 <style>
   :root{
-    --bg:#0d0f14; --panel:#151823; --ink:#e9ecf1; --muted:#9aa3b2; --line:#2c3346;
-    --plus:#4aa4ff; --minus:#ff6b6b; /* קווי השדה = כחול של הפלוס */
+    --bg:#ffffff; --panel:#f8fafc; --ink:#111; --muted:#666; --line:#e5e7eb;
+    --plus:#4aa4ff; --minus:#ff6b6b;
+    --field:#000000;         /* קווי שדה שחורים */
   }
   html,body{height:100%;margin:0;background:var(--bg);color:var(--ink);font-family:Inter,system-ui,Segoe UI,Arial}
   .wrap{height:100%;display:grid;grid-template-rows:auto 1fr}
   .toolbar{display:flex;gap:.5rem;flex-wrap:wrap;align-items:center;background:var(--panel);padding:.6rem .8rem;border-bottom:1px solid var(--line)}
-  .btn{border:1px solid var(--line);background:#10131b;color:var(--ink);padding:.45rem .7rem;border-radius:.6rem;cursor:pointer}
+  .btn{border:1px solid var(--line);background:#fff;color:var(--ink);padding:.45rem .7rem;border-radius:.6rem;cursor:pointer}
   .btn.active{outline:2px solid var(--plus)}
-  .group{display:flex;gap:.4rem;align-items:center;background:#0f1320;border:1px solid var(--line);padding:.35rem .5rem;border-radius:.6rem}
+  .group{display:flex;gap:.4rem;align-items:center;background:#f1f5f9;border:1px solid var(--line);padding:.35rem .5rem;border-radius:.6rem}
   .label{color:var(--muted);font-size:.92rem}
   input[type=range]{accent-color:var(--plus)}
   #stats{margin-inline-start:auto;color:var(--muted);font-size:.92rem}
   #help{margin-inline-start:.5rem;color:var(--muted);font-size:.92rem}
-  canvas{display:block;width:100%;height:100%}
+  canvas{display:block;width:100%;height:100%;background:#ffffff}
 </style>
 </head>
 <body>
@@ -58,17 +59,17 @@
   // מצב
   let dpr=1, zoom=1;
   let charges=[];            // {x,y,q}
-  let tool='+', qMag=1;      // עוצמה למטענים חדשים
-  let seedBase=22;           // בסיס זרעים ליחידת |q|
-  const lineColor=getComputedStyle(document.documentElement).getPropertyValue('--plus').trim(); // כחול
+  let tool='+', qMag=1;
+  let seedBase=22;           // עדיין שולט בכמות הזרעים (צפיפות)
+  const lineColor=getComputedStyle(document.documentElement).getPropertyValue('--field').trim(); // שחור
 
   // כלל: אם לאורך המסלול השדה מתאפס → לא מציירים את הקו
   const DISCARD_IF_ZERO = true;
 
-  // נומריקה (קווים ארוכים וברורים)
+  // נומריקה (כמו שהיה)
   const soft=6, seedR=12, stopNear=8, maxSteps=40000, fieldClip=1e4;
-  const minSpeed=1e-6;       // רף "איפוס שדה"
-  const stepLen=1.6;         // צעד קטן → קו חלק וארוך
+  const minSpeed=1e-6;
+  const stepLen=1.6;
 
   // DOM
   const $=s=>document.querySelector(s);
@@ -89,7 +90,7 @@
 
   function setMode(m){ tool=m; modePlus.classList.toggle('active',m==='+'); modeMinus.classList.toggle('active',m==='-'); }
 
-  // E(x,y) מסך מטענים
+  // E(x,y)
   function fieldAt(x,y){
     let Ex=0,Ey=0;
     for(const c of charges){
@@ -103,7 +104,6 @@
     return [Ex,Ey];
   }
 
-  // צעד RK4 + בדיקת "איפוס"
   function rk4StepWithZeroCheck(x,y,h,dir=+1){
     const f=(xx,yy)=>{
       const v=fieldAt(xx,yy);
@@ -125,9 +125,11 @@
   function nearAnyCharge(x,y,rad){ for(const c of charges){ if(Math.hypot(x-c.x,y-c.y)<rad) return true; } return false; }
 
   function drawScene(){
-    ctx.fillStyle=getComputedStyle(document.documentElement).getPropertyValue('--bg').trim();
+    // רקע לבן
+    ctx.fillStyle='#ffffff';
     ctx.fillRect(0,0,cv.width/zoom,cv.height/zoom);
-    drawFieldLines(); // קווים כחולים + חצים במרכז
+
+    drawFieldLines(); // קווים שחורים + חצים באמצע (אותו אורך)
 
     // מטענים
     for(const c of charges){
@@ -135,12 +137,12 @@
       ctx.beginPath();
       ctx.fillStyle = c.q>0? getComputedStyle(document.documentElement).getPropertyValue('--plus').trim()
                             : getComputedStyle(document.documentElement).getPropertyValue('--minus').trim();
-      ctx.strokeStyle='#0b0e16';
-      ctx.lineWidth=2/zoom;
+      ctx.strokeStyle='#333';
+      ctx.lineWidth=1/zoom;
       ctx.arc(c.x,c.y,r,0,TAU);
       ctx.fill(); ctx.stroke();
       ctx.save();
-      ctx.fillStyle='#0b0e16';
+      ctx.fillStyle='#ffffff';
       ctx.font=(11/zoom)+'px system-ui';
       ctx.textAlign='center'; ctx.textBaseline='middle';
       ctx.fillText(c.q>0?'+':'−',c.x,c.y);
@@ -149,36 +151,36 @@
   }
 
   function drawFieldLines(){
-    ctx.lineWidth=1.8/zoom;         // עבה וברור
+    ctx.lineWidth=2.0/zoom;          // מעט עבה יותר על לבן
     ctx.strokeStyle=lineColor;
 
-    // זורעים קווים מכל המטענים (גם + וגם −) — קווים ארוכים דו-כיווניים
+    // --- סימטריה + רווחים שווים סביב מטען ---
+    // זורעים קווים בזוויות שוות (דטרמיניסטי) סביב כל מטען.
     for(const c of charges){
       const seeds=Math.max(4, Math.round(seedBase*Math.abs(c.q))); // ∝ |q|
       for(let k=0;k<seeds;k++){
-        const a=(TAU*k)/seeds;
+        const a=(TAU*k)/seeds;                     // זוויות שוות → סימטרי ורווח שווה סביב המטען
         const sx=c.x+seedR*Math.cos(a), sy=c.y+seedR*Math.sin(a);
         drawStreamline(sx,sy);
       }
     }
 
     function drawStreamline(sx,sy){
-      const fwd = integrate(sx,sy,+1);   // עם כיוון השדה
-      const bwd = integrate(sx,sy,-1);   // נגד כיוון – להאריך
+      const fwd = integrate(sx,sy,+1);
+      const bwd = integrate(sx,sy,-1);
 
-      // כלל איפוס: לא מציירים אם יש אפס לאורך אחד הכיוונים
       if(DISCARD_IF_ZERO && (fwd.zeroHit || bwd.zeroHit)) return;
 
       const pts = bwd.pts.slice().reverse().concat(fwd.pts);
       if(pts.length<2) return;
 
-      // קו
+      // קו שחור
       ctx.beginPath();
       ctx.moveTo(pts[0][0],pts[0][1]);
       for(let i=1;i<pts.length;i++) ctx.lineTo(pts[i][0],pts[i][1]);
       ctx.stroke();
 
-      // חץ במרכז הקו
+      // חץ באמצע הקו (שחור עם מתאר לבן כדי שייראה על רקע לבן)
       drawArrowAtMiddle(pts);
     }
 
@@ -191,43 +193,37 @@
         const {nx,ny,nearZero}=rk4StepWithZeroCheck(px,py,stepLen,dir);
         pts.push([nx,ny]); px=nx; py=ny;
 
-        if(nearZero){ zeroHit=true; break; }     // אותר "איפוס שדה"
-        if(outOfBounds(px,py)) break;            // יציאה מהמסך
-        if(nearAnyCharge(px,py,stopNear)) break; // כניסה למטען
+        if(nearZero){ zeroHit=true; break; }
+        if(outOfBounds(px,py)) break;
+        if(nearAnyCharge(px,py,stopNear)) break;
       }
       return {pts, zeroHit};
     }
 
-    // === חץ באמצע הקו (גם + וגם −) ===
     function drawArrowAtMiddle(pts){
-      // מחשבים אורך כולל של הפוליליין
-      let L=0;
+      // אורך כולל
+      let L=0, segLen=[];
       for(let i=1;i<pts.length;i++){
-        const dx=pts[i][0]-pts[i-1][0], dy=pts[i][1]-pts[i-1][1];
-        L+=Math.hypot(dx,dy);
+        const d=Math.hypot(pts[i][0]-pts[i-1][0], pts[i][1]-pts[i-1][1]);
+        segLen.push(d); L+=d;
       }
-      if(L<10) return; // קו קצר מדי
+      if(L<10) return;
 
-      // מוצאים נקודת אמצע לאורך (L/2)
+      // נקודת אמצע לאורך
       const target=L/2;
-      let acc=0, seg=1;
-      for(; seg<pts.length; seg++){
-        const dx=pts[seg][0]-pts[seg-1][0], dy=pts[seg][1]-pts[seg-1][1];
-        const d=Math.hypot(dx,dy);
+      let acc=0;
+      for(let i=1;i<pts.length;i++){
+        const d=segLen[i-1];
         if(acc+d>=target){
-          // אינטרפולציה בתוך המקטע
           const t=(target-acc)/d;
-          const x=pts[seg-1][0] + t*dx;
-          const y=pts[seg-1][1] + t*dy;
+          const x=pts[i-1][0]+t*(pts[i][0]-pts[i-1][0]);
+          const y=pts[i-1][1]+t*(pts[i][1]-pts[i-1][1]);
+          const ang=Math.atan2(pts[i][1]-pts[i-1][1], pts[i][0]-pts[i-1][0]);
 
-          // כיוון הטנגנס במרכז – לפי המקטע הזה
-          const ang=Math.atan2(dy,dx);
-
-          // מציירים חץ גדול, לבן, עם קו מתאר כהה
           const len=24/zoom, w=14/zoom;
           ctx.save();
-          ctx.fillStyle="#ffffff";
-          ctx.strokeStyle="#0b0e16";
+          ctx.fillStyle="#000000";     // חץ שחור
+          ctx.strokeStyle="#ffffff";   // מתאר לבן דק כדי שיבלוט
           ctx.lineWidth=2/zoom;
           ctx.beginPath();
           ctx.moveTo(x, y);
@@ -248,7 +244,7 @@
 
   function draw(){
     drawScene();
-    stats.textContent=`מטענים: ${charges.length} · בסיס קווים: ${seedBase} · זום: ${zoom.toFixed(2)}`;
+    stats.textContent=`מטענים: ${charges.length} · צפיפות: ${seedBase} · זום: ${zoom.toFixed(2)}`;
   }
 
   // הוספה/מחיקה
@@ -274,7 +270,7 @@
   cv.addEventListener('pointerdown',e=>{
     const m=getMouse(e);
     if(e.ctrlKey){
-      // בחרי מטען קרוב לגרירה
+      // גרירת מטען קיים
       let bi=-1,bd=12*12;
       for(let i=0;i<charges.length;i++){
         const c=charges[i], d=(c.x-m.x)**2+(c.y-m.y)**2;
@@ -308,7 +304,7 @@
 
   qVal.textContent=qMag;
   document.getElementById('qUp').onclick=()=>{ qMag=Math.min(5,qMag+1); qVal.textContent=qMag; };
-  document.getElementById('qDown').onclick=()=>{ qMag=Math.max(1,qMag-1); qVal.textContent=qMag; };
+  document.getElementById('qDown').onclick=()=>{ qMag=Math.max(1,qMag-1); qVal.text_content=qMag; };
 
   seedBaseInput.oninput=()=>{ seedBase=parseInt(seedBaseInput.value,10); draw(); };
 
